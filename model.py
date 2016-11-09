@@ -63,6 +63,13 @@ class uvmodel():
         transformed.__repr__ = lambda: "(%s + %s)" % (repr(self), repr(model))
         return transformed
 
+    # add an additional model to model
+    def sub(self, model):
+        transformed = uvmodel(self)
+        transformed.eval = lambda u,v: self.eval(u, v) - model.eval(u, v)
+        transformed.__repr__ = lambda: "(%s - %s)" % (repr(self), repr(model))
+        return transformed
+
     # convolve model with additional model
     def convolve(self, model):
         transformed = uvmodel(self)
@@ -72,6 +79,11 @@ class uvmodel():
 
     # overloaded binary operators for some transforms
 
+    __add__ = add
+    __sub__ = sub
+    __mul__ = multiply
+    __rmul__ = multiply
+
     # visibility function ? (manual recursion)
     def eval(self, u, v):
         raise(Exception("eval called on empty model"))
@@ -79,24 +91,17 @@ class uvmodel():
 # model primitives
 
 # point source (delta function) at 0, 0 with total flux = 1
-class Point(uvmodel):
-    def __repr__(self):
-        return "Point"
-    def eval(self, u, v):
-        return 1. # how best to do this and preserve shape independent of data type? u/u?
+Point = uvmodel()
+Point.__repr__ = lambda: "Point"
+Point.eval = lambda u,v: 1.+ 0j # how best to do this and preserve shape independent of data type? u/u?
 
 # sigma=1 circular gaussian at 0, 0 with total flux = 1
-class Gauss(uvmodel):
-    def __repr__(self):
-        return "Gauss"
-    def eval(self, u, v):
-        return np.exp(-0.5*(u**2 + v**2)) # make theano compatible?
+Gauss = uvmodel()
+Gauss.__repr__ = lambda: "Gauss"
+Gauss.eval = lambda u,v: np.exp(-0.5*(u**2 + v**2)) + 0j # make theano compatible?
 
 # r=1 disk at 0, 0 with total flux = 1
-class Disk(uvmodel):
-    def __repr__(self):
-        return "Disk"
-    def eval(self, u, v):
-        # of course this is image space we will need to use UV representation
-        return 1. * (np.sqrt(u**2 + v**2) < 1) # make theano compatible?
+Disk = uvmodel()
+Disk.__repr__ = lambda: "Disk"
+Disk.eval = lambda u,v: 1. * (np.sqrt(u**2 + v**2) < 1) + 0j # make theano compatible?
 

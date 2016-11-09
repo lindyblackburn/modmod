@@ -9,53 +9,94 @@
 #  - how many subclasses and for what? (mostly bookkeeping)
 #  - support for image model?
 
+import numpy as np
+
 # uv model of sky
 class uvmodel():
 
-    # model amplitude factor
-    amplitude = 1.
-
+    # initialize model as copy of an existing model
+    def __init__(self, model=None):
+        self.parent = model # do we need to record keep to preserve model tree?
 
     # operators on model, will return a new transformed model
 
     # shift model by dx and dy in image domain [radians on sky]
     def shift(self, dx, dy):
-        return None
+        transformed = uvmodel(self)
+        transformed.eval = lambda u,v: np.exp(-2.*np.pi*1j*(dx*u + dy*v)) * self.eval(u, v)
+        transformed.__repr__ = lambda: "%s(x-%s, y-%s)" % (repr(self), repr(dx), repr(dy))
+        return transformed
+
+    # shift assuming image domain (for test)
+    def imshift(self, dx, dy):
+        transformed = uvmodel(self)
+        transformed.eval = lambda u,v: self.eval(u-dx, v-dy)
+        transformed.__repr__ = lambda: "%s(x-%s, y-%s)" % (repr(self), repr(dx), repr(dy))
+        return transformed
 
     # rotate model by theta [radians]
     def rotate(self, theta):
-        return None
+        transformed = uvmodel(self)
+        (cth, sth) = (np.cos(theta), np.sin(theta))
+        transformed.eval = lambda u,v: self.eval(cth*u + sth*v, -sth*u + cth*v) # negative rotate coords
+        transformed.__repr__ = lambda: "R[%s, %s rad]" % (repr(self), repr(theta))
+        return transformed
 
     # stretch model by hx and hy in image domain, maintain total flux
     def scale(self, hx, hy):
-        return None
+        transformed = uvmodel(self)
+        transformed.eval = lambda u,v: self.eval(hx*u, hy*v)
+        transformed.__repr__ = lambda: "%s(x/%s, y/%s)" % (repr(self), repr(hx), repr(hy))
+        return transformed
 
     # scale model total flux by factor
     def multiply(self, factor):
-        return None
+        transformed = uvmodel(self)
+        transformed.eval = lambda u,v: factor * self.eval(u, v)
+        transformed.__repr__ = lambda: "(%s x %s)" % (repr(factor), repr(self))
+        return transformed
 
     # add an additional model to model
     def add(self, model):
-        return None
+        transformed = uvmodel(self)
+        transformed.eval = lambda u,v: self.eval(u, v) + model.eval(u, v)
+        transformed.__repr__ = lambda: "(%s + %s)" % (repr(self), repr(model))
+        return transformed
 
     # convolve model with additional model
     def convolve(self, model):
-        return None
+        transformed = uvmodel(self)
+        transformed.eval = lambda u,v: self.eval(u, v) * model.eval(u, v)
+        transformed.__repr__ = lambda: "(%s o %s)" % (repr(self), repr(model))
+        return transformed
 
     # overloaded binary operators for some transforms
 
-
-    # visibility variable
-    v = None
-
-    # total flux variable
-    total_flux = None
-
     # visibility function ? (manual recursion)
-    def veval(self, u, v):
-        return None
+    def eval(self, u, v):
+        raise(Exception("eval called on empty model"))
 
+# model primitives
 
-    # hierarchy of transforms ? (record keeping)
+# point source (delta function) at 0, 0 with total flux = 1
+class Point(uvmodel):
+    def __repr__(self):
+        return "Point"
+    def eval(self, u, v):
+        return 1. # how best to do this and preserve shape independent of data type? u/u?
 
+# sigma=1 circular gaussian at 0, 0 with total flux = 1
+class Gauss(uvmodel):
+    def __repr__(self):
+        return "Gauss"
+    def eval(self, u, v):
+        return np.exp(-0.5*(u**2 + v**2)) # make theano compatible?
+
+# r=1 disk at 0, 0 with total flux = 1
+class Disk(uvmodel):
+    def __repr__(self):
+        return "Disk"
+    def eval(self, u, v):
+        # of course this is image space we will need to use UV representation
+        return 1. * (np.sqrt(u**2 + v**2) < 1) # make theano compatible?
 

@@ -31,7 +31,7 @@ class xymodel():
     # rotate model by theta [radians]
     def rotate(self, theta):
         transformed = xymodel(self)
-        (cth, sth) = (np.cos(theta), np.sin(theta))
+        (cth, sth) = (np.cos(theta), np.sin(theta)) # this will call T.cos and T.sin, theano compatible
         transformed.eval = lambda x,y: self.eval(cth*x + sth*y, -sth*x + cth*y) # negative rotate coords
         transformed.__repr__ = lambda: "R[%s, %s rad]" % (repr(self), repr(theta))
         return transformed
@@ -39,7 +39,7 @@ class xymodel():
     # stretch model by hx and hy in image domain, maintain total flux
     def scale(self, hx, hy):
         transformed = xymodel(self)
-        transformed.eval = lambda x,y: (hx*hy)**(-1) * self.eval(x/hx, y/hy) # truediv?
+        transformed.eval = lambda x,y: (hx*hy)**(-1) * self.eval(x/hx, y/hy) # truediv? theano will truediv
         transformed.__repr__ = lambda: "%s(%sx, %sy)" % (repr(self), repr(hx), repr(hy))
         return transformed
 
@@ -67,7 +67,22 @@ class xymodel():
     # convolve model with additional model
     def convolve(self, model):
         transformed = xymodel(self)
-        transformed.eval = lambda x,y: fftconvolve(self.eval(x, y), model.eval(x, y), mode='same') # works? fftconvolve?
+        def eval(x, y):
+            m1 = self.eval(x, y)
+            m2 = model.eval(x, y)
+            # try loop doesn't work here.. sometimes fftconvolve perfectly happy with T object
+            if isinstance(m1, np.ndarray) and isinstance(m2, np.ndarray):
+                ret = fftconvolve(m1, m2, mode='same')
+                print "numpy path"
+                return ret
+            else:
+                print "theano path"
+                import theano.tensor as T
+                m1pad = T.shape_padleft(m1, 2)
+                m2pad = T.shape_padleft(m2, 2)
+                ret = T.nnet.conv2d(m1pad, m2pad, border_mode='half', filter_flip=False)[0,0]
+                return ret
+        transformed.eval = eval
         transformed.__repr__ = lambda: "(%s o %s)" % (repr(self), repr(model))
         return transformed
 

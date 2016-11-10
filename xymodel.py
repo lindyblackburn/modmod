@@ -10,6 +10,7 @@
 #  - support for image model?
 
 import numpy as np
+from scipy.signal import fftconvolve
 
 # uv model of sky
 class xymodel():
@@ -66,7 +67,7 @@ class xymodel():
     # convolve model with additional model
     def convolve(self, model):
         transformed = xymodel(self)
-        transformed.eval = lambda x,y: np.convolve(self.eval(x, y), model.eval(x, y), mode='same') # works? fftconvolve?
+        transformed.eval = lambda x,y: fftconvolve(self.eval(x, y), model.eval(x, y), mode='same') # works? fftconvolve?
         transformed.__repr__ = lambda: "(%s o %s)" % (repr(self), repr(model))
         return transformed
 

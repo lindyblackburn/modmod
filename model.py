@@ -15,8 +15,8 @@ import numpy as np
 class model(object):
 
     # initialize model as copy of an existing model, maintain coord
-    def __init__(self, model=None):
-        self.parent = model # do we need to record keep to preserve model tree?
+    def __init__(self, other=None):
+        self.parent = other # do we need to record keep to preserve model tree?
 
     # operators on model, will return a new transformed model
     def __repr__(self):
@@ -25,7 +25,7 @@ class model(object):
     # shift model by dx and dy in image domain [radians on sky]
     # note that we never anticipate shifting in uv coords, or mulitplying by complex exp in xy coords
     def shift(self, dx, dy):
-        transformed = type(self)(self)
+        transformed = model(self)
         def eval(r, s, coord):
             if coord == 'uv':
                 return np.exp(-2.*np.pi*1j*(dx*r + dy*s)) * self.eval(r, s, coord)
@@ -37,7 +37,7 @@ class model(object):
 
     # stretch model by factors hx and hy in image domain, maintain total flux
     def scale(self, hx, hy):
-        transformed = type(self)(self)
+        transformed = model(self)
         def eval(r, s, coord):
             if coord == 'uv':
                 return self.eval(hx*r, hy*s, coord)
@@ -49,7 +49,7 @@ class model(object):
 
     # rotate model by theta [radians]
     def rotate(self, theta):
-        transformed = type(self)(self)
+        transformed = model(self)
         (cth, sth) = (np.cos(theta), np.sin(theta)) # will return theano output on theano argument
         transformed.eval = lambda r,s,coord: self.eval(cth*r + sth*s, -sth*r + cth*s, coord) # negative rotate coords
         transformed.pp = lambda: "R[%s, %s rad]" % (self.pp(), repr(theta))
@@ -57,34 +57,34 @@ class model(object):
 
     # multiply model total flux by constant factor (support for model x model?)
     def multiply(self, factor):
-        transformed = type(self)(self)
+        transformed = model(self)
         transformed.eval = lambda r,s,coord: factor * self.eval(r, s, coord)
         transformed.pp = lambda: "(%s x %s)" % (repr(factor), self.pp())
         return transformed
 
     # add an additional model to model
-    def add(self, model):
-        transformed = type(self)(self)
-        transformed.eval = lambda r,s,coord: self.eval(r, s, coord) + model.eval(r, s, coord)
-        transformed.pp = lambda: "(%s + %s)" % (self.pp(), model.pp())
+    def add(self, other):
+        transformed = model(self)
+        transformed.eval = lambda r,s,coord: self.eval(r, s, coord) + other.eval(r, s, coord)
+        transformed.pp = lambda: "(%s + %s)" % (self.pp(), other.pp())
         return transformed
 
     # add an additional model to model
-    def sub(self, model):
-        transformed = type(self)(self)
-        transformed.eval = lambda r,s,coord: self.eval(r, s, coord) - model.eval(r, s, coord)
-        transformed.pp = lambda: "(%s - %s)" % (self.pp(), model.pp())
+    def sub(self, other):
+        transformed = model(self)
+        transformed.eval = lambda r,s,coord: self.eval(r, s, coord) - other.eval(r, s, coord)
+        transformed.pp = lambda: "(%s - %s)" % (self.pp(), other.pp())
         return transformed
 
     # convolve model with additional model
-    def convolve(self, model):
-        transformed = type(self)(self)
+    def convolve(self, other):
+        transformed = model(self)
         def eval(r, s, coord):
             if coord == 'uv':
-                return self.eval(r, s, coord) * model.eval(r, s, coord)
+                return self.eval(r, s, coord) * other.eval(r, s, coord)
             else: # xy
                 m1 = self.eval(r, s, coord)
-                m2 = model.eval(r, s, coord)
+                m2 = other.eval(r, s, coord)
                 # try loop doesn't work here.. sometimes fftconvolve perfectly happy with T object
                 if isinstance(m1, np.ndarray) and isinstance(m2, np.ndarray):
                     from scipy.signal import fftconvolve
@@ -99,7 +99,7 @@ class model(object):
                     ret = T.nnet.conv2d(m1pad, m2pad, border_mode='half', filter_flip=False)[0,0]
                     return ret
         transformed.eval = eval
-        transformed.pp = lambda: "(%s o %s)" % (self.pp(), model.pp())
+        transformed.pp = lambda: "(%s o %s)" % (self.pp(), other.pp())
         return transformed
 
     # overloaded binary operators for some transforms

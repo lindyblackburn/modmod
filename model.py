@@ -110,7 +110,7 @@ class model(object):
         transformed = model(self)
         transformed.eval = lambda r,s,coord='xy': self.eval(r, s, coord) - other.eval(r, s, coord)
         transformed.com = lambda: (self.flux()*self.com() - other.flux()*other.com()) / (self.flux() + other.flux())
-        transformed.flux = self.flux() - other.flux()
+        transformed.flux = lambda: self.flux() - other.flux()
         transformed.pp = lambda: "(%s - %s)" % (self.pp(), other.pp())
         return transformed
 
@@ -142,6 +142,7 @@ class model(object):
                     return ret
         transformed.eval = eval
         transformed.com = lambda: self.com() + other.com()
+        print((repr(self), self.eval, self.com, self.flux, other.flux))
         transformed.flux = lambda: self.flux() * other.flux()
         transformed.pp = lambda: "(%s o %s)" % (self.pp(), other.pp())
         return transformed

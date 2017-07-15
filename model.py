@@ -13,6 +13,11 @@ from builtins import object
 import numpy as np
 from scipy.special import j0, j1
 
+from matplotlib import colors as col
+from matplotlib.colors import LinearSegmentedColormap
+anglemap = col.LinearSegmentedColormap.from_list(
+   'anglemap', [col.BASE_COLORS[c] for c in "kbwrk"], N=256, gamma=1.0)
+
 # model of sky (xy or uv)
 class model(object):
 
@@ -186,22 +191,38 @@ class model(object):
             mod = self.convolve(kern.rotate(theta, deg))
         return mod
 
-    # for xy use image size as FOV
-    # for uv use size of smallest feature for FOV
-    def show(self, coord='xy', fov=None, n=256, cmap='afmhot'):
+    def show(self, n=256, colorbar=True, fov=None, zoom=3):
         import matplotlib.pyplot as plt
         if fov is None:
-            fov = 3. * np.sqrt(np.max(self.var()))
-        if coord == 'uv':
-            r = np.linspace(-2./fov, 2./fov, n, endpoint=False)
-        else:
-            r = np.linspace(-fov/2., fov/2., n, endpoint=False)
-        dr = r[1] - r[0]
-        (rr, ss) = np.meshgrid(r, r)
-        a = np.abs(self.eval(rr, ss, coord))
-        plt.imshow(a, origin='lower', vmin=0, extent=[-(fov+dr)/2., (fov-dr)/2., -(fov+dr)/2., (fov-dr)/2.], cmap=cmap)
-        plt.xlabel(coord[0])
-        plt.ylabel(coord[1], rotation=0.)
+            fov = np.sqrt(np.max(self.var()))  # set FOV to 1 sigma
+        fovxy = zoom * fov
+        fovuv = zoom / (2. * np.pi * fov)
+        x = np.linspace(-fovxy, fovxy, n, endpoint=False) # endpoint=False includes a zero point
+        u = np.linspace(-fovuv, fovuv, n, endpoint=False) # n=2**m allows faster convolve
+        dx = x[1]-x[0]
+        du = u[1]-u[0]
+        (xx, yy) = np.meshgrid(x, x)
+        (uu, vv) = np.meshgrid(u, u)
+        vxy = self.eval(xx, yy, 'xy')
+        vuv = self.eval(uu, vv, 'uv')
+        plt.subplot(1, 3, 1)
+        plt.imshow(vxy, origin='lower', vmin=min(np.min(vxy), 0),
+            extent=[-fovxy-dx/2., fovxy-dx/2., -fovxy-dx/2., fovxy-dx/2.], cmap='afmhot')
+        plt.xlabel('x')
+        plt.ylabel('y', rotation=0.)
+        if colorbar: plt.colorbar(orientation='horizontal')
+        plt.subplot(1, 3, 2)
+        plt.imshow(np.abs(vuv), origin='lower', vmin=0,
+            extent=[-fovuv-du/2., fovuv-du/2., -fovuv-du/2., fovuv-du/2.], cmap='afmhot')
+        plt.xlabel('u')
+        plt.ylabel('v', rotation=0.)
+        if colorbar: plt.colorbar(orientation='horizontal')
+        plt.subplot(1, 3, 3)
+        plt.imshow(180.*np.angle(vuv)/np.pi, origin='lower', vmin=-180, vmax=180,
+            extent=[-fovuv-du/2., fovuv-du/2., -fovuv-du/2., fovuv-du/2.], cmap=anglemap)
+        plt.xlabel('u')
+        plt.ylabel('v', rotation=0.)
+        if colorbar: plt.colorbar(orientation='horizontal')
 
     # overloaded binary operators for some transforms
 
@@ -245,10 +266,11 @@ Disk.eval = lambda r,s,coord='xy': np.nan_to_num(j1(2*np.pi*(np.sqrt(r**2 + s**2
 Disk.var = lambda: np.array((1./3., 1./3.))
 
 # Crescent model with radius r1<r2, total flux=1
-# default is to center at middle of outer disk
-def Crescent(r1=0.75, r2=1.0):
-    mod = (Disk.scale(r2) - Disk.scale(r1).shift(r2-r1,0)).divide((r2**2-r1**2))
-    mod.pp = lambda: "Crescent(%s,%s)" % (str(r1), str(r2))
+# default is to center at middle of outer disk, recenter with Crescent.center()
+# -1 < asymmetry < 1 places inner disk boundary with respect to outer disk along x
+def Crescent(r1=0.75, r2=1.0, asymmetry=1.0):
+    mod = (Disk.scale(r2) - Disk.scale(r1).shift(asymmetry*(r2-r1),0)).divide((r2**2-r1**2))
+    mod.pp = lambda: "Crescent(%s,%s,%s)" % (str(r1), str(r2), asymmetry)
     return mod
 
 # Ring model with radius r1<r2, total flux=1

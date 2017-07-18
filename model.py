@@ -191,12 +191,12 @@ class model(object):
             mod = self.convolve(kern.rotate(theta, deg))
         return mod
 
-    def show(self, n=256, colorbar=True, fov=None, zoom=3):
+    def show(self, n=256, colorbar='horizontal', fov=None, zoom=(3, 3), cmap='afmhot', pmap=anglemap):
         import matplotlib.pyplot as plt
         if fov is None:
             fov = np.sqrt(np.max(self.var()))  # set FOV to 1 sigma
-        fovxy = zoom * fov
-        fovuv = zoom / (2. * np.pi * fov)
+        fovxy = zoom[0] * fov
+        fovuv = zoom[1] / (2. * np.pi * fov)
         x = np.linspace(-fovxy, fovxy, n, endpoint=False) # endpoint=False includes a zero point
         u = np.linspace(-fovuv, fovuv, n, endpoint=False) # n=2**m allows faster convolve
         dx = x[1]-x[0]
@@ -207,22 +207,22 @@ class model(object):
         vuv = self.eval(uu, vv, 'uv')
         plt.subplot(1, 3, 1)
         plt.imshow(vxy, origin='lower', vmin=min(np.min(vxy), 0),
-            extent=[-fovxy-dx/2., fovxy-dx/2., -fovxy-dx/2., fovxy-dx/2.], cmap='afmhot')
+            extent=[-fovxy-dx/2., fovxy-dx/2., -fovxy-dx/2., fovxy-dx/2.], cmap=cmap)
         plt.xlabel('x')
         plt.ylabel('y', rotation=0.)
-        if colorbar: plt.colorbar(orientation='horizontal')
+        if colorbar != 'none': plt.colorbar(orientation=colorbar)
         plt.subplot(1, 3, 2)
         plt.imshow(np.abs(vuv), origin='lower', vmin=0,
-            extent=[-fovuv-du/2., fovuv-du/2., -fovuv-du/2., fovuv-du/2.], cmap='afmhot')
+            extent=[-fovuv-du/2., fovuv-du/2., -fovuv-du/2., fovuv-du/2.], cmap=cmap)
         plt.xlabel('u')
         plt.ylabel('v', rotation=0.)
-        if colorbar: plt.colorbar(orientation='horizontal')
+        if colorbar != 'none': plt.colorbar(orientation=colorbar)
         plt.subplot(1, 3, 3)
         plt.imshow(180.*np.angle(vuv)/np.pi, origin='lower', vmin=-180, vmax=180,
-            extent=[-fovuv-du/2., fovuv-du/2., -fovuv-du/2., fovuv-du/2.], cmap=anglemap)
+            extent=[-fovuv-du/2., fovuv-du/2., -fovuv-du/2., fovuv-du/2.], cmap=pmap)
         plt.xlabel('u')
         plt.ylabel('v', rotation=0.)
-        if colorbar: plt.colorbar(orientation='horizontal')
+        if colorbar != 'none': plt.colorbar(orientation=colorbar)
 
     # overloaded binary operators for some transforms
 
@@ -265,7 +265,7 @@ Disk.eval = lambda r,s,coord='xy': np.nan_to_num(j1(2*np.pi*(np.sqrt(r**2 + s**2
                           else (np.sqrt(r**2 + s**2) < 1) / np.pi # np.sqrt okay theano
 Disk.var = lambda: np.array((1./3., 1./3.))
 
-# Crescent model with radius r1<r2, total flux=1
+# Crescent model with radius r1<r2, total flux=1, e.g. simple case of Kamruddin & Dexter 2013
 # default is to center at middle of outer disk, recenter with Crescent.center()
 # -1 < asymmetry < 1 places inner disk boundary with respect to outer disk along x
 def Crescent(r1=0.75, r2=1.0, asymmetry=1.0):

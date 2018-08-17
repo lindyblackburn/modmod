@@ -1,16 +1,21 @@
 # modmod: modular modeling for interferometry
+# delayed evaluation allows building of complex model graph from primitives
+# 2017, 2018 L. Blackburn
 
 # outstanding questions:
-#  - use amplitude or total flux?
+#  - use amplitude or total flux for normalization?
 #  - compatible with pymc3 distributions?
+#  - edward? pymc4?
+#  - sympy compatibility
 
 # future 3.0 compatibility
-from __future__ import division
-from __future__ import print_function
-str = type('')
-from builtins import object
+# from __future__ import division
+# from __future__ import print_function
+# str = type('')
+# from builtins import object
 
 import numpy as np
+import ztypes as zt
 from scipy.special import j0, j1
 
 from matplotlib import colors as col
@@ -42,13 +47,22 @@ class model(object):
     def copy(self):
         return model(self)
 
-    # shift model by dx and dy in image domain [radians on sky]
+    # shift model by dx and dy in image domain [e.g. radians on sky]
     # note that we never anticipate shifting in uv coords, or mulitplying by complex exp in xy coords
-    def shift(self, dx, dy=0):
+    # expand: if true, use ztypes to split complex number into real, imag
+    def shift(self, dx, dy=0, expand=None):
         transformed = model(self)
         def eval(r, s, coord='xy'):
             if coord == 'uv':
-                return np.exp(-2.*np.pi*1j*(dx*r + dy*s)) * self.eval(r, s, coord)
+                other = self.eval(r, s, coord)
+                phasor = -2.* np.pi * (dx*r + dy*s)
+                # if hasattr(other, 'zeros_like') or hasattr(phasor, 'zeros_like'): # theano tensor
+                if expand or type(other) is zt.Complex:
+                    real = np.cos(phasor)
+                    imag = np.sin(phasor)
+                    return zt.Complex(real=real, imag=imag) * self.eval(r, s, coord)
+                else: # numpy use complex data type
+                    return np.exp(1j*phasor) * self.eval(r, s, coord)
             else: # xy
                 return self.eval(r-dx, s-dy, coord)
         transformed.eval = eval
@@ -113,7 +127,12 @@ class model(object):
     # calculating moments here is getting inefficient -- better with some memoization scheme
     def add(self, other):
         transformed = model(self)
-        transformed.eval = lambda r,s,coord='xy': self.eval(r, s, coord) + other.eval(r, s, coord)
+        def eval(r, s, coord):
+            # print self.eval(r, s, coord)
+            # print other.eval(r, s, coord)
+            return self.eval(r, s, coord) + other.eval(r, s, coord)
+        transformed.eval = eval
+        # transformed.eval = lambda r,s,coord='xy': self.eval(r, s, coord) + other.eval(r, s, coord)
         transformed.com = lambda: (self.flux()*self.com() + other.flux()*other.com()) / (self.flux() + other.flux())
         def var():
             (f1, f2) = (self.flux(), other.flux())
@@ -151,13 +170,13 @@ class model(object):
                     from scipy.signal import fftconvolve
                     dv = (r[0,1]-r[0,0]) * (s[1,0]-s[0,0]) # must be from e.g. meshgrid
                     ret = fftconvolve(m1, m2, mode='same') * dv
-                    print("numpy path")
+                    print("numpy path (convolve)")
                     return ret
                 else:
-                    print("theano path")
+                    print("theano path (convolve)")
                     import theano.tensor as T
                     dv = (r[0,1]-r[0,0]) * (s[1,0]-s[0,0]) # must be from e.g. meshgrid
-                    ret = fftconvolve(m1, m2, mode='same') * dv
+                    # ret = fftconvolve(m1, m2, mode='same') * dv
                     m1pad = T.shape_padleft(m1, 2)
                     m2pad = T.shape_padleft(m2, 2)
                     ret = T.nnet.conv2d(m1pad, m2pad, border_mode='half', filter_flip=False)[0,0] / dv
@@ -194,9 +213,11 @@ class model(object):
     def show(self, n=256, colorbar='horizontal', fov=None, zoom=(3, 3), cmap='afmhot', pmap=anglemap):
         import matplotlib.pyplot as plt
         if fov is None:
-            fov = np.sqrt(np.max(self.var()))  # set FOV to 1 sigma
-        fovxy = zoom[0] * fov
-        fovuv = zoom[1] / (2. * np.pi * fov)
+            fov = np.sqrt(self.var())  # set FOV to 1 sigma
+        if not hasattr(zoom, '__getitem__'):
+            zoom = (zoom, zoom) # set x and y zoom to be the same
+        fovxy = zoom[0] * max(fov)
+        fovuv = zoom[1] / (2. * np.pi * min(fov))
         x = np.linspace(-fovxy, fovxy, n, endpoint=False) # endpoint=False includes a zero point
         u = np.linspace(-fovuv, fovuv, n, endpoint=False) # n=2**m allows faster convolve
         dx = x[1]-x[0]
@@ -241,13 +262,13 @@ def err(msg):
 Point = model()
 Point.pp = lambda: "Point"
 # how best to do this and preserve shape independent of data type? u/u? what is norm for xy coords?
-Point.eval = lambda r,s,coord='xy': 1.+0j if coord=='uv' else 1. * ((r==0.) & (s==0.))
+Point.eval = lambda r,s,coord='xy': 1. if coord=='uv' else 1. * ((r==0.) & (s==0.))
 Point.var = lambda: np.array((0., 0.))
 
 # sigma_xy=1, sigma_uv=1/2pi circular gaussian at 0, 0 with total flux = 1
 Gauss = model()
 Gauss.pp = lambda: "Gauss" # sigma_uv = 1/(2pi*sigma_xy)
-Gauss.eval = lambda r,s,coord='xy': (np.exp(-2.*np.pi**2*(r**2 + s**2)) * 1.+0j) if coord=='uv' \
+Gauss.eval = lambda r,s,coord='xy': (np.exp(-2.*np.pi**2*(r**2 + s**2))) if coord=='uv' \
                           else (np.exp(-0.5*(r**2 + s**2)) * (2.*np.pi)**(-1))  # np.sqrt okay theano
 Gauss.var = lambda: np.array((1., 1.))
 

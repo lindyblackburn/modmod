@@ -1,11 +1,21 @@
 """
 Complex types
 
-2018.06.05 - Lindy Blackburn
+2018.06.05 - Lindy Blackburn, basic construction
+2018.12.03 - Lindy Blackburn, additional tune-up
 """
 
 import numpy as np
 
+# Complex type has two attributes: real, imag
+# each is supposed to be "real-valued" and represent the re,im components
+# what is the goal here ...
+# if it is desired to use ztypes, then user should inject a ztypes element early on
+# ztypes should greedy promote objects to ztypes when needed
+# the only use case for ztypes right now is to support transparent fake "complex" types for theano vars
+# theano vars shouldn't necessarily use ztypes, only if autograd is desired
+# so it should not be automatically triggered, it should be manually triggered
+# note we want to think about post-theano work as well
 class Complex(object):
     """
     Complex pair a[...,0] + 1j*a[...,1]
@@ -13,22 +23,31 @@ class Complex(object):
 
     # create from complex numbers or real, imag, no copy!
     def __init__(self, real=None, imag=None):
-        if imag is not None:           # explicitly send real, imag
+        if type(real) == type(self): # already a Complex type, do nothing
+            if imag is not None:
+                raise Exception('cannot set imag value with Complex type input')
+            (self.real, self.imag) = (real.real, real.imag)
+        elif imag is not None:  # explicitly send real, imag - iterators and lists will be left as is
             (self.real, self.imag) = (real, imag)
-        elif type(real) == type(self): # already a Complex type
-            (self.real, self.imag) = (real.real, real.imag)
+        # examples: 1j, [1j, 2j], np.array(1j)
+        # not examples: theano.tensor.cscalar() 
+        # due to conversion to array, there are some differences between e.g. array(1) and 1 in output
         elif np.iscomplexobj(real):    # already a complex numpy array or list of complex numbers
-            real = np.array(real)
-            (self.real, self.imag) = (real.real, real.imag)
-        elif hasattr(real, '__len__'): # some kind of tuple, list, array
-            (self.real, self.imag) = (np.array(real), 0.)
-        else:                          # single item or theano real object
+            if imag is not None:
+                raise Exception('cannot set imag value with complex object input')
+            real = np.array(real) # need to convert to to array if taking in a list
+            (self.real, self.imag) = (real.real, real.imag) # split real, imag and set separately
+        # also will be converted to array
+        elif hasattr(real, '__len__'): # some other kind of tuple, list, array, but not iterator..
+            (self.real, self.imag) = (np.array(real), np.zeros(len(real)))
+        else:                          # single item, iterator, or theano real object
             (self.real, self.imag) = (real, 0.)
 
-    # index into data, numpy only
+    # index into data self[key], propagate key to real and imag separately
     def __getitem__(self, key):
         return Complex(real=self.real[key], imag=self.imag[key])
 
+    # currently returns (real, imag) tuples for each element
     def __iter__(self):
         return ((real, imag) for (real, imag) in zip(self.real, self.imag))
 

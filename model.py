@@ -5,7 +5,7 @@
 # outstanding questions:
 #  - use amplitude or total flux for normalization?
 #  - compatible with pymc3 distributions?
-#  - edward? pymc4?
+#  - edward? pymc4? tensorflow?
 #  - sympy compatibility
 
 # future 3.0 compatibility
@@ -23,6 +23,9 @@ from matplotlib.colors import LinearSegmentedColormap
 anglemap = col.LinearSegmentedColormap.from_list(
    'anglemap', [col.BASE_COLORS[c] for c in "kbwrk"], N=256, gamma=1.0)
 
+# set to True to default convert complex to ztypes.Complex
+expand=False
+
 # model of sky (xy or uv)
 class model(object):
 
@@ -32,6 +35,7 @@ class model(object):
         self.flux = lambda: 1.0
         self.com = lambda: np.array((0., 0.))
         if other is not None:
+            self.expand = other.expand
             self.eval = other.eval
             self.flux = other.flux
             self.com = other.com
@@ -50,19 +54,20 @@ class model(object):
     # shift model by dx and dy in image domain [e.g. radians on sky]
     # note that we never anticipate shifting in uv coords, or mulitplying by complex exp in xy coords
     # expand: if true, use ztypes to split complex number into real, imag
-    def shift(self, dx, dy=0, expand=None):
+    def shift(self, dx, dy=0, expand=expand):
         transformed = model(self)
         def eval(r, s, coord='xy'):
             if coord == 'uv':
                 other = self.eval(r, s, coord)
                 phasor = -2.* np.pi * (dx*r + dy*s)
                 # if hasattr(other, 'zeros_like') or hasattr(phasor, 'zeros_like'): # theano tensor
+                # don't rely on zt.Complex decomposition of exp(1j*phasor) to avoid sending to complex tensor
                 if expand or type(other) is zt.Complex:
                     real = np.cos(phasor)
                     imag = np.sin(phasor)
                     return zt.Complex(real=real, imag=imag) * self.eval(r, s, coord)
                 else: # numpy use complex data type
-                    return np.exp(1j*phasor) * self.eval(r, s, coord)
+                    return np.exp(1j*phasor) * other
             else: # xy
                 return self.eval(r-dx, s-dy, coord)
         transformed.eval = eval
@@ -70,22 +75,22 @@ class model(object):
         transformed.pp = lambda: "%s(x-%s, y-%s)" % (self.pp(), str(dx), str(dy))
         return transformed
 
-    # stretch model by factors hx and hy in image domain maintain peak flux
+    # stretch model by factors hx and hy in image domain
+    # maintain peak flux (norm=False) or total flux (norm=True)
     def scale(self, hx, hy=None, norm=False):
         if hy is None:
             hy = hx
-        if norm:
-            transformed = self.scale(hx, hy).divide(hx*hy)
-            return transformed
+        factor = hx*hy
         transformed = model(self)
         def eval(r, s, coord='xy'):
             if coord == 'uv':
-                return hx*hy * self.eval(hx*r, hy*s, coord)
+                return factor * self.eval(hx*r, hy*s, coord) if not norm else self.eval(hx*r, hy*s, coord)
             else: # xy
-                return self.eval(r/hx, s/hy, coord) # truediv? theano will truediv
+                # theano will true-divide
+                return self.eval(r/hx, s/hy, coord) if not norm else self.eval(r/hx, s/hy, coord) / factor
         transformed.eval = eval
-        transformed.flux = lambda: self.flux() * hx * hy
-        transformed.var = lambda: np.array((hx**2, hy**2)) * self.var()
+        transformed.flux = lambda: self.flux() * factor if not norm else self.flux()
+        transformed.var = lambda: np.array(((hx**2, hx*hy), (hx*hy, hy**2))) * self.var()
         transformed.pp = lambda: "%s(x/%s, y/%s)" % (self.pp(), str(hx), str(hy))
         return transformed
 
@@ -96,12 +101,11 @@ class model(object):
             theta = theta * np.pi/180. 
         (cth, sth) = (np.cos(theta), np.sin(theta)) # will return theano output on theano argument
         transformed.eval = lambda r,s,coord='xy': self.eval(cth*r + sth*s, -sth*r + cth*s, coord) # negative rotate coords
+        R = np.array(((cth, -sth), (sth, cth))) # rotation matrix
         def com():
-            (x, y) = self.com()
-            return np.array(((cth*x - sth*y), (sth*x + cth*y)))
+            return np.matmul(R, self.com())
         def var(): # guess
-            (x, y) = self.var()
-            return np.array(((cth*x - sth*y), (sth*x + cth*y)))
+            return np.matmul(R.T, np.matmul(R, self.var()))
         transformed.com = com
         transformed.var = var
         transformed.pp = lambda: "R[%s, %s deg]" % (self.pp(), str(theta*180./np.pi))
@@ -128,19 +132,19 @@ class model(object):
     def add(self, other):
         transformed = model(self)
         def eval(r, s, coord):
-            # print self.eval(r, s, coord)
-            # print other.eval(r, s, coord)
             return self.eval(r, s, coord) + other.eval(r, s, coord)
         transformed.eval = eval
-        # transformed.eval = lambda r,s,coord='xy': self.eval(r, s, coord) + other.eval(r, s, coord)
+        transformed.flux = lambda: self.flux() + other.flux()
         transformed.com = lambda: (self.flux()*self.com() + other.flux()*other.com()) / (self.flux() + other.flux())
         def var():
             (f1, f2) = (self.flux(), other.flux())
             (c1, c2) = (self.com(), other.com())
-            com = (f1*c1 + f2*c2) / (f1+f2) # new center-of-mass
+            (v1, v2) = (self.var(), other.var())
+            tot = f1 + f2
+            (a1, a2) = (f1/tot, f2/tot)
+            com = a1*c1 + a2*c2 # new center-of-mass
             (d1, d2) = (c1-com, c2-com) # difference vector to new center-of-mass
-            return (f1*(self.var() + d1**2) + f2*(other.var() + d2**2)) / (f1+f2)
-        transformed.flux = lambda: self.flux() + other.flux()
+            return a1*(v1 + np.outer(d1, d1)) + a2*(v2 + np.outer(d2, d2))
         transformed.var = var
         transformed.pp = lambda: "(%s + %s)" % (self.pp(), other.pp())
         return transformed
@@ -148,10 +152,21 @@ class model(object):
     # subtract a model from model
     def sub(self, other):
         transformed = model(self)
-        transformed.eval = lambda r,s,coord='xy': self.eval(r, s, coord) - other.eval(r, s, coord)
-        transformed.com = lambda: (self.flux()*self.com() - other.flux()*other.com()) / (self.flux() + other.flux())
-        transformed.var = lambda: self.var() + other.var() # too complicated to do right..
+        def eval(r, s, coord):
+            return self.eval(r, s, coord) - other.eval(r, s, coord)
+        transformed.eval = eval
         transformed.flux = lambda: self.flux() - other.flux()
+        transformed.com = lambda: (self.flux()*self.com() - other.flux()*other.com()) / (self.flux() - other.flux())
+        def var():
+            (f1, f2) = (self.flux(), other.flux())
+            (c1, c2) = (self.com(), other.com())
+            (v1, v2) = (self.var(), other.var())
+            tot = f1 - f2
+            (a1, a2) = (f1/tot, f2/tot)
+            com = a1*c1 - a2*c2 # new center-of-mass
+            (d1, d2) = (c1-com, c2-com) # difference vector to new center-of-mass
+            return a1*(v1 + np.outer(d1, d1)) - a2*(v2 + np.outer(d2, d2))
+        transformed.var = var
         transformed.pp = lambda: "(%s - %s)" % (self.pp(), other.pp())
         return transformed
 
@@ -210,10 +225,18 @@ class model(object):
             mod = self.convolve(kern.rotate(theta, deg))
         return mod
 
+    # normalize to total flux of 1
+    def norm(self):
+        transformed = model(self)
+        transformed.flux = lambda: 1.0
+        transformed.eval = lambda r,s,coord='xy': self.eval(r,s,coord) / self.flux()
+        transformed.pp = lambda: "Norm[%s]" % (self.pp())
+        return transformed
+
     def show(self, n=256, colorbar='horizontal', fov=None, zoom=(3, 3), cmap='afmhot', pmap=anglemap):
         import matplotlib.pyplot as plt
         if fov is None:
-            fov = np.sqrt(self.var())  # set FOV to 1 sigma
+            fov = np.sqrt(np.diagonal(self.var()))  # set FOV to 1 sigma
         if not hasattr(zoom, '__getitem__'):
             zoom = (zoom, zoom) # set x and y zoom to be the same
         fovxy = zoom[0] * max(fov)
@@ -244,6 +267,8 @@ class model(object):
         plt.xlabel('u')
         plt.ylabel('v', rotation=0.)
         if colorbar != 'none': plt.colorbar(orientation=colorbar)
+        plt.setp(plt.gcf(), figwidth=12, figheight=4.5)
+        plt.tight_layout()
 
     # overloaded binary operators for some transforms
 
@@ -263,34 +288,35 @@ Point = model()
 Point.pp = lambda: "Point"
 # how best to do this and preserve shape independent of data type? u/u? what is norm for xy coords?
 Point.eval = lambda r,s,coord='xy': 1. if coord=='uv' else 1. * ((r==0.) & (s==0.))
-Point.var = lambda: np.array((0., 0.))
+Point.var = lambda: np.array(((0., 0.), (0., 0.)))
 
 # sigma_xy=1, sigma_uv=1/2pi circular gaussian at 0, 0 with total flux = 1
 Gauss = model()
 Gauss.pp = lambda: "Gauss" # sigma_uv = 1/(2pi*sigma_xy)
 Gauss.eval = lambda r,s,coord='xy': (np.exp(-2.*np.pi**2*(r**2 + s**2))) if coord=='uv' \
                           else (np.exp(-0.5*(r**2 + s**2)) * (2.*np.pi)**(-1))  # np.sqrt okay theano
-Gauss.var = lambda: np.array((1., 1.))
+Gauss.var = lambda: np.array(((1., 0.), (0., 1.)))
 
 # r=1 circle with total flux = 1 (uv only)
 Circle = model()
 Circle.pp = lambda: "Circle" # unit circle of unit flux (delta function at r=1 / 2pi)
 Circle.eval = lambda r,s,coord='xy': j0(2*np.pi*(r**2 + s**2)) if coord=='uv' \
                           else (np.sqrt(r**2 + s**2) == 1.) / (2*np.pi)
-Circle.var = lambda: np.array((0.5, 0.5))
+Circle.var = lambda: np.array(((0.5, 0.), (0., 0.5)))
 
 # r=1 disk at 0, 0 with total flux = 1
 Disk = model()
 Disk.pp = lambda: "Disk"
 Disk.eval = lambda r,s,coord='xy': np.nan_to_num(j1(2*np.pi*(np.sqrt(r**2 + s**2)))/(np.sqrt(r**2 + s**2)))/np.pi + 1.*(r**2 + s**2 == 0.) if coord=='uv' \
                           else (np.sqrt(r**2 + s**2) < 1) / np.pi # np.sqrt okay theano
-Disk.var = lambda: np.array((1./3., 1./3.))
+Disk.var = lambda: np.array(((1./3., 0.), (0., 1./3.)))
 
 # Crescent model with radius r1<r2, total flux=1, e.g. simple case of Kamruddin & Dexter 2013
 # default is to center at middle of outer disk, recenter with Crescent.center()
 # -1 < asymmetry < 1 places inner disk boundary with respect to outer disk along x
-def Crescent(r1=0.75, r2=1.0, asymmetry=1.0):
-    mod = (Disk.scale(r2) - Disk.scale(r1).shift(asymmetry*(r2-r1),0)).divide((r2**2-r1**2))
+# contrast: 1 = zero flux inside, 0 = fully-filled disk
+def Crescent(r1=0.75, r2=1.0, asymmetry=1.0, contrast=1, expand=expand):
+    mod = (Disk.scale(r2) - contrast*Disk.scale(r1).shift(asymmetry*(r2-r1),0,expand=expand)).divide((r2**2-contrast*r1**2))
     mod.pp = lambda: "Crescent(%s,%s,%s)" % (str(r1), str(r2), asymmetry)
     return mod
 

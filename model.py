@@ -34,13 +34,16 @@ class model(object):
         # defaults
         self.flux = lambda: 1.0
         self.com = lambda: np.array((0., 0.))
+        self.expand = expand
         if other is not None:
-            self.expand = other.expand
-            self.eval = other.eval
-            self.flux = other.flux
-            self.com = other.com
-            self.var = other.var
-            self.pp = other.pp
+            self.expand = other.expand # toggle for ztypes
+            self.im   = other.im   # visuator function xy space
+            self.vis  = other.vis  # visuator function uv space
+            self.flux = other.flux # total flux
+            self.com  = other.com  # center-of-mass
+            self.var  = other.var  # covariance matrix
+            self.duv  = other.duv  # gradient in u,v
+            self.pp   = other.pp   # pretty-print operation
         self.parent = other # do we need to record keep to preserve model tree?
 
     # operators on model, will return a new transformed model
@@ -56,21 +59,20 @@ class model(object):
     # expand: if true, use ztypes to split complex number into real, imag
     def shift(self, dx, dy=0, expand=expand):
         transformed = model(self)
-        def eval(r, s, coord='xy'):
-            if coord == 'uv':
-                other = self.eval(r, s, coord)
-                phasor = -2.* np.pi * (dx*r + dy*s)
-                # if hasattr(other, 'zeros_like') or hasattr(phasor, 'zeros_like'): # theano tensor
-                # don't rely on zt.Complex decomposition of exp(1j*phasor) to avoid sending to complex tensor
-                if expand or type(other) is zt.Complex:
-                    real = np.cos(phasor)
-                    imag = np.sin(phasor)
-                    return zt.Complex(real=real, imag=imag) * self.eval(r, s, coord)
-                else: # numpy use complex data type
-                    return np.exp(1j*phasor) * other
-            else: # xy
-                return self.eval(r-dx, s-dy, coord)
-        transformed.eval = eval
+        def vis(u, v):
+            other = self.vis(u, v)
+            phasor = -2.* np.pi * (dx*u + dy*v)
+            # if hasattr(other, 'zeros_like') or hasattr(phasor, 'zeros_like'): # theano tensor
+            if expand or type(other) is zt.Complex:
+                real = np.cos(phasor)
+                imag = np.sin(phasor)
+                return zt.Complex(real=real, imag=imag) * other
+            else: # numpy use complex data type
+                return np.exp(1j*phasor) * other
+        def im(x, y):
+                return self.im(x-dx, y-dy)
+        transformed.vis = vis
+        transformed.im = im
         transformed.com = lambda: self.com() + np.array((dx, dy)) # center of mass in x,y
         transformed.pp = lambda: "%s(x-%s, y-%s)" % (self.pp(), str(dx), str(dy))
         return transformed
@@ -81,16 +83,19 @@ class model(object):
         if hy is None:
             hy = hx
         factor = hx*hy
+        if norm:
+            transformed = self.scale(hx, hy, norm=False).divide(factor)
+            transformed.flux = self.flux # avoid unnecessary computation
+            return transformed
         transformed = model(self)
-        def eval(r, s, coord='xy'):
-            if coord == 'uv':
-                return factor * self.eval(hx*r, hy*s, coord) if not norm else self.eval(hx*r, hy*s, coord)
-            else: # xy
-                # theano will true-divide
-                return self.eval(r/hx, s/hy, coord) if not norm else self.eval(r/hx, s/hy, coord) / factor
-        transformed.eval = eval
-        transformed.flux = lambda: self.flux() * factor if not norm else self.flux()
-        transformed.var = lambda: np.array(((hx**2, hx*hy), (hx*hy, hy**2))) * self.var()
+        def vis(u, v):
+            return factor * self.vis(hx*u, hy*v)
+        def im(x, y):
+            return self.im(x/hx, y/hy) # truediv? theano will truediv
+        transformed.vis = vis
+        transformed.im = im
+        transformed.flux = lambda: self.flux() * factor
+        transformed.var = lambda: np.array(((hx**2, factor), (factor, hy**2))) * self.var()
         transformed.pp = lambda: "%s(x/%s, y/%s)" % (self.pp(), str(hx), str(hy))
         return transformed
 
@@ -100,8 +105,9 @@ class model(object):
         if deg:
             theta = theta * np.pi/180. 
         (cth, sth) = (np.cos(theta), np.sin(theta)) # will return theano output on theano argument
-        transformed.eval = lambda r,s,coord='xy': self.eval(cth*r + sth*s, -sth*r + cth*s, coord) # negative rotate coords
         R = np.array(((cth, -sth), (sth, cth))) # rotation matrix
+        transformed.vis = lambda u,v: self.vis(cth*u + sth*v, -sth*u + cth*v) # negative rotate coords
+        transformed.im  = lambda x,y: self.im(cth*x + sth*y, -sth*x + cth*y) # negative rotate coords
         def com():
             return np.matmul(R, self.com())
         def var(): # guess
@@ -114,7 +120,8 @@ class model(object):
     # multiply model total flux by constant factor (support for model x model?)
     def multiply(self, factor):
         transformed = model(self)
-        transformed.eval = lambda r,s,coord='xy': factor * self.eval(r, s, coord)
+        transformed.vis = lambda u,v: factor * self.vis(u, v)
+        transformed.im = lambda x,y: factor * self.im(x, y)
         transformed.flux = lambda: factor * self.flux()
         transformed.pp = lambda: "(%s x %s)" % (str(factor), self.pp())
         return transformed
@@ -122,7 +129,8 @@ class model(object):
     # divide model total flux by constant factor (support for 1./model?)
     def divide(self, factor):
         transformed = model(self)
-        transformed.eval = lambda r,s,coord='xy': self.eval(r, s, coord) / factor
+        transformed.vis = lambda u,v: self.vis(u, v) / factor
+        transformed.im = lambda x,y: self.im(x, y) / factor
         transformed.flux = lambda: self.flux() / factor
         transformed.pp = lambda: "(%s / %s)" % (self.pp(), str(factor))
         return transformed
@@ -131,9 +139,8 @@ class model(object):
     # calculating moments here is getting inefficient -- better with some memoization scheme
     def add(self, other):
         transformed = model(self)
-        def eval(r, s, coord):
-            return self.eval(r, s, coord) + other.eval(r, s, coord)
-        transformed.eval = eval
+        transformed.vis = lambda u,v: self.vis(u, v) + other.vis(u, v)
+        transformed.im = lambda x,y: self.im(x, y) + other.im(x, y)
         transformed.flux = lambda: self.flux() + other.flux()
         transformed.com = lambda: (self.flux()*self.com() + other.flux()*other.com()) / (self.flux() + other.flux())
         def var():
@@ -152,9 +159,8 @@ class model(object):
     # subtract a model from model
     def sub(self, other):
         transformed = model(self)
-        def eval(r, s, coord):
-            return self.eval(r, s, coord) - other.eval(r, s, coord)
-        transformed.eval = eval
+        transformed.vis = lambda u,v: self.vis(u, v) - other.vis(u, v)
+        transformed.im = lambda x,y: self.im(x, y) - other.im(x, y)
         transformed.flux = lambda: self.flux() - other.flux()
         transformed.com = lambda: (self.flux()*self.com() - other.flux()*other.com()) / (self.flux() - other.flux())
         def var():
@@ -173,30 +179,27 @@ class model(object):
     # convolve model with additional model
     def convolve(self, other):
         transformed = model(self)
-        def eval(r, s, coord='xy'):
-            if coord == 'uv':
-                return self.eval(r, s, coord) * other.eval(r, s, coord)
-            else: # xy
-                m1 = self.eval(r, s, coord)
-                m2 = other.eval(r, s, coord)
-                # try loop doesn't work here.. sometimes fftconvolve perfectly happy with T object
-                # note that for this to work, coord must be a uniform grid
-                if all((isinstance(m1, (int, long, float, complex, np.ndarray)) for obj in (m1, m2))):
-                    from scipy.signal import fftconvolve
-                    dv = (r[0,1]-r[0,0]) * (s[1,0]-s[0,0]) # must be from e.g. meshgrid
-                    ret = fftconvolve(m1, m2, mode='same') * dv
-                    print("numpy path (convolve)")
-                    return ret
-                else:
-                    print("theano path (convolve)")
-                    import theano.tensor as T
-                    dv = (r[0,1]-r[0,0]) * (s[1,0]-s[0,0]) # must be from e.g. meshgrid
-                    # ret = fftconvolve(m1, m2, mode='same') * dv
-                    m1pad = T.shape_padleft(m1, 2)
-                    m2pad = T.shape_padleft(m2, 2)
-                    ret = T.nnet.conv2d(m1pad, m2pad, border_mode='half', filter_flip=False)[0,0] / dv
-                    return ret
-        transformed.eval = eval
+        transformed.vis = lambda u,v: self.vis(u, v) * other.vis(u, v)
+        def im(x, y):
+            m1 = self.im(x, y)
+            m2 = other.im(x, y)
+            # try loop doesn't work here.. sometimes fftconvolve perfectly happy with T object
+            # note that for this to work, coord must be a uniform grid
+            if all((isinstance(m1, (int, long, float, complex, np.ndarray)) for obj in (m1, m2))):
+                from scipy.signal import fftconvolve
+                dv = (x[0,1]-x[0,0]) * (y[1,0]-y[0,0]) # must be from e.g. meshgrid
+                ret = fftconvolve(m1, m2, mode='same') * dv
+                return ret
+            else:
+                print("theano path (convolve)")
+                import theano.tensor as T
+                dv = (x[0,1]-x[0,0]) * (y[1,0]-y[0,0]) # must be from e.g. meshgrid
+                # ret = fftconvolve(m1, m2, mode='same') * dv
+                m1pad = T.shape_padleft(m1, 2)
+                m2pad = T.shape_padleft(m2, 2)
+                ret = T.nnet.conv2d(m1pad, m2pad, border_mode='half', filter_flip=False)[0,0] / dv
+                return ret
+        transformed.im = im
         transformed.com = lambda: self.com() + other.com()
         transformed.flux = lambda: self.flux() * other.flux()
         transformed.var = lambda: self.var() + other.var()
@@ -207,10 +210,14 @@ class model(object):
     def center(self):
         transformed = model(self)
         transformed.com = lambda: np.array((0., 0.))
-        def eval(xx, yy, coord='xy'):
+        def vis(u, v):
             com = self.com()
-            return self.shift(-com[0], -com[1]).eval(xx, yy, coord)
-        transformed.eval = eval
+            return self.shift(-com[0], -com[1]).vis(u, v)
+        def im(x, y):
+            com = self.com()
+            return self.shift(-com[0], -com[1]).im(x, y)
+        transformed.vis = vis
+        transformed.im = im
         transformed.pp = lambda: "Center[%s]" % (self.pp())
         return transformed
 
@@ -229,7 +236,8 @@ class model(object):
     def norm(self):
         transformed = model(self)
         transformed.flux = lambda: 1.0
-        transformed.eval = lambda r,s,coord='xy': self.eval(r,s,coord) / self.flux()
+        transformed.vis = lambda u,v: self.vis(u,v) / self.flux()
+        transformed.im = lambda x,y: self.im(x,y) / self.flux()
         transformed.pp = lambda: "Norm[%s]" % (self.pp())
         return transformed
 
@@ -247,8 +255,8 @@ class model(object):
         du = u[1]-u[0]
         (xx, yy) = np.meshgrid(x, x)
         (uu, vv) = np.meshgrid(u, u)
-        vxy = self.eval(xx, yy, 'xy')
-        vuv = self.eval(uu, vv, 'uv')
+        vxy = self.im(xx, yy)
+        vuv = self.vis(uu, vv)
         plt.subplot(1, 3, 1)
         plt.imshow(vxy, origin='lower', vmin=min(np.min(vxy), 0),
             extent=[-fovxy-dx/2., fovxy-dx/2., -fovxy-dx/2., fovxy-dx/2.], cmap=cmap)
@@ -287,29 +295,37 @@ def err(msg):
 Point = model()
 Point.pp = lambda: "Point"
 # how best to do this and preserve shape independent of data type? u/u? what is norm for xy coords?
-Point.eval = lambda r,s,coord='xy': 1. if coord=='uv' else 1. * ((r==0.) & (s==0.))
+Point.vis = lambda u,v: 1.
+Point.im = lambda x,y: 1. * ((x==0.) & (y==0.))
 Point.var = lambda: np.array(((0., 0.), (0., 0.)))
+Point.duv = None
 
 # sigma_xy=1, sigma_uv=1/2pi circular gaussian at 0, 0 with total flux = 1
 Gauss = model()
 Gauss.pp = lambda: "Gauss" # sigma_uv = 1/(2pi*sigma_xy)
-Gauss.eval = lambda r,s,coord='xy': (np.exp(-2.*np.pi**2*(r**2 + s**2))) if coord=='uv' \
-                          else (np.exp(-0.5*(r**2 + s**2)) * (2.*np.pi)**(-1))  # np.sqrt okay theano
+Gauss.vis = lambda u,v: np.exp(-2.*np.pi**2*(u**2 + v**2))
+Gauss.im = lambda x,y: (np.exp(-0.5*(x**2 + y**2)) * (2.*np.pi)**(-1))
 Gauss.var = lambda: np.array(((1., 0.), (0., 1.)))
+Gauss.duv = None
 
 # r=1 circle with total flux = 1 (uv only)
 Circle = model()
 Circle.pp = lambda: "Circle" # unit circle of unit flux (delta function at r=1 / 2pi)
-Circle.eval = lambda r,s,coord='xy': j0(2*np.pi*(r**2 + s**2)) if coord=='uv' \
-                          else (np.sqrt(r**2 + s**2) == 1.) / (2*np.pi)
+Circle.vis = lambda u,v: j0(2*np.pi*(u**2 + v**2))
+Circle.im = lambda x,y: (np.sqrt(x**2 + y**2) == 1.) / (2*np.pi)
 Circle.var = lambda: np.array(((0.5, 0.), (0., 0.5)))
+Circle.duv = None
 
 # r=1 disk at 0, 0 with total flux = 1
 Disk = model()
 Disk.pp = lambda: "Disk"
-Disk.eval = lambda r,s,coord='xy': np.nan_to_num(j1(2*np.pi*(np.sqrt(r**2 + s**2)))/(np.sqrt(r**2 + s**2)))/np.pi + 1.*(r**2 + s**2 == 0.) if coord=='uv' \
-                          else (np.sqrt(r**2 + s**2) < 1) / np.pi # np.sqrt okay theano
+def vis(u, v):
+    r = np.sqrt(u**2 + v**2)
+    return np.nan_to_num(j1(2*np.pi*r)/r)/np.pi + 1.*(r == 0.)
+Disk.vis = lambda u,v: vis(u, v)
+Disk.im = lambda x,y: (np.sqrt(x**2 + y**2) < 1) / np.pi # np.sqrt okay theano
 Disk.var = lambda: np.array(((1./3., 0.), (0., 1./3.)))
+Disk.duv = None
 
 # Crescent model with radius r1<r2, total flux=1, e.g. simple case of Kamruddin & Dexter 2013
 # default is to center at middle of outer disk, recenter with Crescent.center()

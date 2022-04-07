@@ -96,11 +96,9 @@ class Complex(object):
         return Complex(real=a.real*b.real - a.imag*b.imag, imag=a.real*b.imag + a.imag*b.real)
 
     def __mul__(self, b):
-        print 'mul'
         return self.multiply(Complex(b))
 
     def __rmul__(self, b):
-        print 'rmul'
         return self.multiply(Complex(b))
 
     def __truediv__(self, b):
